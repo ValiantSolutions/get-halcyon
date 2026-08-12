@@ -7,7 +7,7 @@
 set -euo pipefail
 
 # Stamped by the release publish job; "__UNRELEASED__" means a dev copy.
-HALCYON_BOOTSTRAP_VERSION="v0.1.0-rc.7"
+HALCYON_BOOTSTRAP_VERSION="v0.1.0-rc.8"
 # Per-release sha256 of the EC2 installer assets, stamped by the same publish
 # job; "__UNSET__" means a dev copy (checksum verification is skipped).
 INSTALL_EC2_SHA256="ceb14d93e6cab51c3d4a55c6a48fd3dc20256078d65d92fe6a0f5e4918d3c97e"
@@ -21,6 +21,8 @@ HEALTH_INTERVAL=3
 TAG=""
 SUBCOMMAND=""
 RELEASE_JSON_FILE=""
+# In-progress .env temp; holds live secrets, so the trap must remove it.
+ENV_TMP_FILE=""
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info() { printf '%b%s%b\n' "$YELLOW" "$*" "$NC"; }
@@ -30,6 +32,9 @@ die()  { err "ERROR: $*"; exit 1; }
 
 cleanup() {
   if [ -n "$RELEASE_JSON_FILE" ]; then rm -f -- "$RELEASE_JSON_FILE"; fi
+  # A Ctrl-C between mktemp and mv would otherwise leave all three live secrets
+  # on disk, where a customer tarring the install dir for backup picks them up.
+  if [ -n "${ENV_TMP_FILE:-}" ]; then rm -f -- "$ENV_TMP_FILE"; fi
   # If a failure exits us anywhere between ghcr_login and the normal logout,
   # still drop the credential docker login persisted in ~/.docker/config.json.
   if [ "${GHCR_LOGGED_IN:-0}" = "1" ]; then docker logout ghcr.io; fi
@@ -191,6 +196,71 @@ poll_health() {
   exit 1
 }
 
+# Random secrets, matching the generators documented in the .env template so a
+# customer regenerating one by hand produces the same shape. openssl is the
+# fallback because the Docker path may run on a host without python3.
+#   hex     -> python3 secrets.token_hex(32)     -> 64 chars of [0-9a-f]
+#   urlsafe -> python3 secrets.token_urlsafe(32) -> 43 chars of [A-Za-z0-9_-]
+# An explicit command -v branch, not 'python3 ... || openssl ...': under set -e
+# a failing command substitution in an assignment exits before any fallback.
+gen_secret() {
+  local kind="$1" value="" shape='^[0-9a-f]{64}$' pyfn=token_hex
+  [ "$kind" = hex ] || { shape='^[A-Za-z0-9_-]{43}$'; pyfn=token_urlsafe; }
+  if command -v python3 >/dev/null 2>&1; then
+    value="$(python3 -c "import secrets; print(secrets.${pyfn}(32))" || true)"
+    # Shape-check here too, not just at the end: a python3 that exits 0 with a
+    # truncated value must fall through to openssl rather than kill the install.
+    [[ "$value" =~ $shape ]] || value=""
+  fi
+  if [ -z "$value" ] && command -v openssl >/dev/null 2>&1; then
+    if [ "$kind" = hex ]; then value="$(openssl rand -hex 32 || true)"
+    else value="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n' || true)"; fi
+  fi
+  # Shape, not just non-empty: catches a truncated or half-written value from a
+  # python3/openssl that is present but broken.
+  [[ "$value" =~ $shape ]] || die "could not generate a ${kind} secret — install python3 or openssl, then re-run"
+  printf '%s' "$value"
+}
+
+# Write .env from the template with the three crypto secrets filled in.
+# Nothing lands at .env until it has passed validation: a half-written .env
+# would be preserved forever by the -e/-L guard and brick every future run.
+create_env_with_secrets() {
+  local sk ek ps tmp key
+  sk="$(gen_secret hex)"; ek="$(gen_secret hex)"; ps="$(gen_secret urlsafe)"
+  # Test for ANY collision explicitly. The 'A && B || C' form is SC2015: it is
+  # not if-then-else, and it would run die() whenever an earlier test failed for
+  # an unexpected reason, not only on a real collision.
+  if [ "$sk" = "$ek" ] || [ "$ek" = "$ps" ] || [ "$sk" = "$ps" ]; then
+    die "generated secrets are not distinct - aborting"
+  fi
+  tmp="$(mktemp ./.env.tmp.XXXXXX)"
+  ENV_TMP_FILE="$tmp"
+  chmod 600 "$tmp"
+  # Values reach awk via ENVIRON[], never argv or the program text, so no shell
+  # or awk escape processing touches them — injection-safe for any generated
+  # byte. ENV_TMP_FILE is set, so the EXIT trap removes the temp on every
+  # failure path below (die included) and nothing reaches .env until it passes.
+  HALC_SK="$sk" HALC_EK="$ek" HALC_PS="$ps" awk '
+    /^SECRET_KEY=$/     { print "SECRET_KEY="     ENVIRON["HALC_SK"]; next }
+    /^ENCRYPTION_KEY=$/ { print "ENCRYPTION_KEY=" ENVIRON["HALC_EK"]; next }
+    /^PBKDF2_SALT=$/    { print "PBKDF2_SALT="    ENVIRON["HALC_PS"]; next }
+    { print }' default.env.template > "$tmp" || die "could not write .env from default.env.template"
+  # Verify the GENERATED SHAPE, not merely non-empty: the anchors match only a
+  # bare '^KEY=$', so any other template line passes through verbatim and '.+'
+  # would bless it — 'PBKDF2_SALT= ' yields an empty salt and
+  # 'PBKDF2_SALT=halcyon-ai-security-v1' ships the source-published default,
+  # reopening the hole this closes. Template bytes are load-bearing now.
+  for key in "SECRET_KEY=[0-9a-f]{64}" "ENCRYPTION_KEY=[0-9a-f]{64}" "PBKDF2_SALT=[A-Za-z0-9_-]{43}"; do
+    grep -Eq "^${key}$" "$tmp" || die "${key%%=*} did not receive a generated value — default.env.template must contain a bare '${key%%=*}=' line; nothing was written"
+  done
+  mv -f "$tmp" .env
+  ENV_TMP_FILE=""
+  info "Created .env with generated SECRET_KEY, ENCRYPTION_KEY and PBKDF2_SALT.
+IMPORTANT: back up .env now — ENCRYPTION_KEY and PBKDF2_SALT cannot be recovered,
+and changing them later orphans all encrypted data. See default.env.template."
+}
+
 cmd_install_docker() {
   require_token
   ghcr_login
@@ -201,19 +271,31 @@ cmd_install_docker() {
   docker compose pull
   docker logout ghcr.io; GHCR_LOGGED_IN=0
   # -e/-L guard: a directory or dangling-symlink .env must also be preserved.
+  local generated=0
   if [ -e .env ] || [ -L .env ]; then
     info "Existing .env preserved (never overwritten); default.env.template was"
-    info "downloaded alongside it for reference."
+    info "downloaded alongside it for reference. Its secrets were NOT checked or"
+    info "generated — an .env from an older installer may still have them unset."
   else
-    cp default.env.template .env
-    info "Created .env from default.env.template."
+    # Secrets are generated exactly once, here. A re-run takes the branch above
+    # and regenerates nothing — regenerating over a live deployment would orphan
+    # every encrypted column.
+    create_env_with_secrets
+    generated=1
   fi
   ensure_data_dir
   good "Install assets are in place. Halcyon has NOT been started yet."
   printf '\nNext steps:\n'
   printf '  1. Edit .env and set values for:\n'
-  printf '       SECRET_KEY, ENCRYPTION_KEY, BASE_URL,\n'
-  printf '       and Google OAuth (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET).\n'
+  printf '       BASE_URL, and Google OAuth (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET).\n'
+  # Only true on the branch that generated them: claiming it on the preserved
+  # path would tell an upgrading SE their secrets are set when an .env from the
+  # old installer still has all three bare.
+  if [ "$generated" = 1 ]; then
+    printf '     SECRET_KEY, ENCRYPTION_KEY and PBKDF2_SALT are already generated.\n'
+  else
+    printf '       plus SECRET_KEY, ENCRYPTION_KEY and PBKDF2_SALT if not already set.\n'
+  fi
   printf '     LLM provider keys are configured in the app after first login.\n'
   printf '  2. Then run: ./halcyon.sh start\n'
   exit 0
@@ -222,10 +304,27 @@ cmd_install_docker() {
 cmd_start() {
   [ -f .env ] || die ".env not found — run './halcyon.sh install-docker --tag <tag>' first, then edit .env"
   local key missing=""
-  for key in SECRET_KEY ENCRYPTION_KEY BASE_URL; do
+  # PBKDF2_SALT is required in production: unset, the app falls back to a salt
+  # published in this repository's source and only logs a warning. Fail closed.
+  for key in SECRET_KEY ENCRYPTION_KEY PBKDF2_SALT BASE_URL; do
     grep -Eq "^${key}=.+" .env || missing="${missing} ${key}"
   done
-  [ -z "$missing" ] || die "these required .env keys are missing or empty:${missing}"
+  if [ -n "$missing" ]; then
+    err "these required .env keys are missing or empty:${missing}"
+    # Existing-deployment case FIRST, stated as the preserving action: an install
+    # that already booted encrypted its data under the crypto_utils.py fallback
+    # salt, so a fresh value orphans all of it. A hurried operator copies the
+    # first instruction — it must be the safe one.
+    case "$missing" in *PBKDF2_SALT*)
+      err "PBKDF2_SALT is now required:
+  Already booted (holds encrypted data)? Set PBKDF2_SALT=halcyon-ai-security-v1
+    — the default it has been using. Any other value orphans that data; move off
+    the default later via the migrate_encryption.py rotation flow.
+  Never booted? Generate one:
+    python3 -c 'import secrets; print(secrets.token_urlsafe(32))'" ;;
+    esac
+    exit 1
+  fi
   # Credential-free by design: install-docker/upgrade-docker already pulled
   # the image and logged out of ghcr.io.
   docker compose up -d
