@@ -3,7 +3,7 @@
 <!--
   Synced automatically from the Halcyon private repository — do not edit this
   copy in get-halcyon; changes here are overwritten on the next release.
-  v0.1.0-rc.11 placeholders are replaced with the release tag at sync time.
+  v0.1.0-rc.12 placeholders are replaced with the release tag at sync time.
 -->
 
 This repository contains `halcyon.sh`, the bootstrap installer for
@@ -20,7 +20,7 @@ the installer cannot fetch anything.
 directly — treat a copy on any other host, or under any other spelling, as
 suspect.
 
-Current release: `v0.1.0-rc.11`
+Current release: `v0.1.0-rc.12`
 
 ---
 
@@ -39,11 +39,11 @@ Current release: `v0.1.0-rc.11`
 mkdir halcyon && cd halcyon
 
 # Download and inspect the installer
-curl -fLO https://raw.githubusercontent.com/ValiantSolutions/get-halcyon/v0.1.0-rc.11/halcyon.sh
+curl -fLO https://raw.githubusercontent.com/ValiantSolutions/get-halcyon/v0.1.0-rc.12/halcyon.sh
 less halcyon.sh
 
 # Recommended: verify the checksum against the value in your onboarding
-# packet or the v0.1.0-rc.11 release notes
+# packet or the v0.1.0-rc.12 release notes
 sha256sum halcyon.sh
 
 chmod +x halcyon.sh
@@ -52,7 +52,7 @@ chmod +x halcyon.sh
 read -rsp 'Deploy token: ' GITHUB_TOKEN; echo; export GITHUB_TOKEN
 
 # Install
-./halcyon.sh install-docker --tag v0.1.0-rc.11
+./halcyon.sh install-docker --tag v0.1.0-rc.12
 
 # Place your customer .env in this directory (or edit the generated one), then:
 ./halcyon.sh start
@@ -66,11 +66,11 @@ unset GITHUB_TOKEN
 
 ```bash
 # Download and inspect the installer
-curl -fLO https://raw.githubusercontent.com/ValiantSolutions/get-halcyon/v0.1.0-rc.11/halcyon.sh
+curl -fLO https://raw.githubusercontent.com/ValiantSolutions/get-halcyon/v0.1.0-rc.12/halcyon.sh
 less halcyon.sh
 
 # Recommended: verify the checksum against the value in your onboarding
-# packet or the v0.1.0-rc.11 release notes
+# packet or the v0.1.0-rc.12 release notes
 sha256sum halcyon.sh
 
 chmod +x halcyon.sh
@@ -79,7 +79,7 @@ chmod +x halcyon.sh
 read -rsp 'Deploy token: ' GITHUB_TOKEN; echo; export GITHUB_TOKEN
 
 # Place your customer .env in the current directory, then install
-sudo -E ./halcyon.sh install-ec2 --tag v0.1.0-rc.11
+sudo -E ./halcyon.sh install-ec2 --tag v0.1.0-rc.12
 
 # Done — clear the token from the environment
 unset GITHUB_TOKEN
@@ -89,10 +89,10 @@ unset GITHUB_TOKEN
 
 ```bash
 # Docker
-./halcyon.sh upgrade-docker --tag v0.1.0-rc.11
+./halcyon.sh upgrade-docker --tag v0.1.0-rc.12
 
 # EC2
-sudo -E ./halcyon.sh upgrade-ec2 --tag v0.1.0-rc.11
+sudo -E ./halcyon.sh upgrade-ec2 --tag v0.1.0-rc.12
 
 # Done — clear the token from the environment
 unset GITHUB_TOKEN
