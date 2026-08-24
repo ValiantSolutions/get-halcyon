@@ -7,11 +7,11 @@
 set -euo pipefail
 
 # Stamped by the release publish job; "__UNRELEASED__" means a dev copy.
-HALCYON_BOOTSTRAP_VERSION="v0.1.0-rc.12"
+HALCYON_BOOTSTRAP_VERSION="v0.1.0-rc.13"
 # Per-release sha256 of the EC2 installer assets, stamped by the same publish
 # job; "__UNSET__" means a dev copy (checksum verification is skipped).
-INSTALL_EC2_SHA256="10c297b7dceb52e302803fc96400a72d2f787d2d494d9d5bb50f4623f31db640"
-UPDATE_EC2_SHA256="cf100b586b797066206ac204bf2f03ad6d141862a66904f3b4e1b7409044117c"
+INSTALL_EC2_SHA256="11badcb8f5ecd3c546c223f5da25b5ba0c29d2fa8aeaea4faa1ec8663ac8437f"
+UPDATE_EC2_SHA256="ba286da67f3d7062089acafb93c3ac3c1a610d2be1f193c00eec070f29de3672"
 
 GITHUB_REPO="ValiantSolutions/Halcyon-AI-Security"
 GHCR_USER="valiant-deploy"
