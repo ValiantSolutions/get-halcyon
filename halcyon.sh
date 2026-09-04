@@ -7,7 +7,7 @@
 set -euo pipefail
 
 # Stamped by the release publish job; "__UNRELEASED__" means a dev copy.
-HALCYON_BOOTSTRAP_VERSION="v0.1.0-rc.15"
+HALCYON_BOOTSTRAP_VERSION="v0.1.0-rc.16"
 # Per-release sha256 of the EC2 installer assets, stamped by the same publish
 # job; "__UNSET__" means a dev copy (checksum verification is skipped).
 INSTALL_EC2_SHA256="11badcb8f5ecd3c546c223f5da25b5ba0c29d2fa8aeaea4faa1ec8663ac8437f"
