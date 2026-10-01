@@ -7,7 +7,7 @@
 set -euo pipefail
 
 # Stamped by the release publish job; "__UNRELEASED__" means a dev copy.
-HALCYON_BOOTSTRAP_VERSION="v0.1.0-rc.22"
+HALCYON_BOOTSTRAP_VERSION="v0.1.0-rc.23"
 # Per-release sha256 of the EC2 installer assets, stamped by the same publish
 # job; "__UNSET__" means a dev copy (checksum verification is skipped).
 INSTALL_EC2_SHA256="11badcb8f5ecd3c546c223f5da25b5ba0c29d2fa8aeaea4faa1ec8663ac8437f"
@@ -15,6 +15,7 @@ UPDATE_EC2_SHA256="ba286da67f3d7062089acafb93c3ac3c1a610d2be1f193c00eec070f29de3
 
 GITHUB_REPO="ValiantSolutions/Halcyon-AI-Security"
 GHCR_USER="valiant-deploy"
+HALCYON_REPO="ghcr.io/valiantsolutions/halcyon"
 HEALTH_URL="http://localhost/health"
 HEALTH_TIMEOUT=90
 HEALTH_INTERVAL=3
@@ -64,6 +65,7 @@ Environment:
   GITHUB_TOKEN  Customer deploy token (read:packages, contents:read). Prompted
                 for interactively if not set.
   GHCR_TOKEN    Optional override token for the ghcr.io docker login.
+  HALCYON_KEEP_OLD_IMAGES=1  upgrade-docker skips removing old Halcyon images.
 
 Run each command from your Halcyon install directory. Tags are always pinned
 explicitly (e.g. v1.2.3 or v1.2.3-rc.1); 'latest' is never used.
@@ -339,7 +341,30 @@ cmd_upgrade_docker() {
   docker compose pull
   docker logout ghcr.io; GHCR_LOGGED_IN=0
   docker compose up -d
-  poll_health
+  poll_health  # exits on failure, so cleanup below runs only after a healthy start
+  cleanup_old_images || err "WARNING: old-image cleanup failed; the upgrade itself succeeded."
+}
+
+# Remove superseded HALCYON_REPO images only (never prune -a / system prune). Keeps
+# each image a container uses plus the newest other one (rollback), newest-first by
+# our own sort. rmi without -f: Docker itself refuses anything still in use.
+cleanup_old_images() {
+  [ "${HALCYON_KEEP_OLD_IMAGES:-0}" != 1 ] || { info "HALCYON_KEEP_OLD_IMAGES=1: old images kept."; return 0; }
+  local ids used="" old ref size
+  ids="$(docker ps -aq)" || return 1
+  # shellcheck disable=SC2086 # container IDs are single hex words
+  if [ -n "$ids" ]; then used="$(docker inspect --format '{{.Image}}' $ids)" || return 1; fi
+  old="$(docker images --no-trunc "$HALCYON_REPO" --format '{{.CreatedAt}}|{{.ID}}|{{.Repository}}:{{.Tag}}|{{.Size}}' \
+    | sort -r | HALC_USED="$used" awk -F'|' -v repo="${HALCYON_REPO}:" '
+      BEGIN { n = split(ENVIRON["HALC_USED"], u, "\n"); for (i = 1; i <= n; i++) inuse[u[i]] = 1 }
+      index($3, repo) != 1 || $3 ~ /:<none>$/ { next }
+      !($2 in seen) { seen[$2] = 1; keep[$2] = ($2 in inuse) || !spare++ }
+      !keep[$2] { print $3 "|" $4 }')" || return 1
+  while IFS='|' read -r ref size && [ -n "$ref" ]; do
+    if docker rmi "$ref" >/dev/null; then good "Removed old image ${ref} (${size})"; else err "WARNING: kept ${ref} (docker rmi refused)"; fi
+  done <<< "$old"
+  # Dangling images with OUR Dockerfile label; older unlabeled ones are left alone.
+  docker image prune -f --filter "label=org.opencontainers.image.source=https://github.com/${GITHUB_REPO}"
 }
 
 # Byte-level integrity for the EC2 scripts we exec as root. The publish job
